@@ -183,6 +183,507 @@ void updateKeyModeLEDs() {
   FastLED.show();
 }
 
+// ==================== DISCOVERY MODE (M1) ====================
+
+// F1 — CHORD parameters
+const char* qualityNames[] = { "Maj", "Min", "Dim", "Aug", "Sus2", "Sus4" };
+const uint8_t numQualities = 6;
+
+const char* sizeNames[] = { "Tri", "7th", "9th", "11th", "13th" };
+const uint8_t numSizes = 5;
+
+const char* extensionNames[] = { "Off", "b9", "#9", "#11", "b13" };
+const uint8_t numExtensions = 5;
+
+const char* tensionNames[] = { "Low", "Med", "High" };
+const uint8_t numTensions = 3;
+
+// F2 — COLOR parameters
+const char* addedNames[] = { "Off", "2", "4", "6", "13" };
+const uint8_t numAdded = 5;
+
+const char* suspendNames[] = { "Off", "Sus2", "Sus4", "2+4" };
+const uint8_t numSuspensions = 4;
+
+const char* alterNames[] = { "Off", "b5", "#5", "b9", "#9", "#11" };
+const uint8_t numAlterations = 6;
+
+const char* spreadNames[] = { "Tight", "Med", "Open", "Wide" };
+const uint8_t numSpreads = 4;
+
+// F3 — VOICING parameters
+const char* inversionNames[] = { "Root", "1st", "2nd", "3rd" };
+const uint8_t numInversions = 4;
+
+const char* spacingNames[] = { "Close", "Med", "Open", "Wide" };
+const uint8_t numSpacings = 4;
+
+const char* registerNames[] = { "Low", "LoMd", "HiMd", "High" };
+const uint8_t numRegisters = 4;
+
+const char* bassNames[] = { "Root", "3rd", "5th", "7th" };
+const uint8_t numBassOptions = 4;
+
+// F4 — DISCOVERY parameters
+const char* relationNames[] = { "Rt", "3rd", "5th", "7th", "Ext" };
+const uint8_t numRelations = 5;
+
+const char* diatChromNames[] = { "Dia", "Mix", "Chr" };
+const uint8_t numDiatChrom = 3;
+
+const char* simpleCompNames[] = { "Smp", "Med", "Cplx" };
+const uint8_t numSimpleComp = 3;
+
+const char* famUnexpNames[] = { "Fam", "Mix", "Unx" };
+const uint8_t numFamUnexp = 3;
+
+// Chord state
+struct ChordState {
+  uint8_t pageIndex;         // 0=F1, 1=F2, 2=F3, 3=F4
+  uint8_t params[4][4];      // [page][encoder] — current value per param
+  int8_t noteRoot;            // MIDI note of pressed keyboard key, -1 if none
+  int8_t heldKeyIndex;        // physical key index (0-11) held, -1 if none
+  bool active;                // true when Discovery Mode is on
+};
+
+ChordState chord = {
+  0,
+  {{0, 0, 0, 0}, {0, 0, 0, 0}, {0, 1, 1, 0}, {0, 0, 0, 0}},
+  -1, -1, false
+};
+
+uint8_t chordNotesPlaying[8] = {};
+uint8_t chordNoteCount = 0;
+
+// Get parameter max value for a given page and encoder
+uint8_t chordParamMax(uint8_t page, uint8_t enc) {
+  switch (page) {
+    case 0: // F1 — CHORD
+      switch (enc) {
+        case 0: return numQualities - 1;
+        case 1: return numSizes - 1;
+        case 2: return numExtensions - 1;
+        case 3: return numTensions - 1;
+      }
+      break;
+    case 1: // F2 — COLOR
+      switch (enc) {
+        case 0: return numAdded - 1;
+        case 1: return numSuspensions - 1;
+        case 2: return numAlterations - 1;
+        case 3: return numSpreads - 1;
+      }
+      break;
+    case 2: // F3 — VOICING
+      switch (enc) {
+        case 0: return numInversions - 1;
+        case 1: return numSpacings - 1;
+        case 2: return numRegisters - 1;
+        case 3: return numBassOptions - 1;
+      }
+      break;
+    case 3: // F4 — DISCOVERY
+      switch (enc) {
+        case 0: return numRelations - 1;
+        case 1: return numDiatChrom - 1;
+        case 2: return numSimpleComp - 1;
+        case 3: return numFamUnexp - 1;
+      }
+      break;
+  }
+  return 0;
+}
+
+// Get display label for a parameter
+const char* chordParamLabel(uint8_t page, uint8_t enc) {
+  switch (page) {
+    case 0:
+      switch (enc) {
+        case 0: return "Qual";
+        case 1: return "Size";
+        case 2: return "Ext";
+        case 3: return "Tens";
+      }
+      break;
+    case 1:
+      switch (enc) {
+        case 0: return "Add";
+        case 1: return "Susp";
+        case 2: return "Alt";
+        case 3: return "Sprd";
+      }
+      break;
+    case 2:
+      switch (enc) {
+        case 0: return "Inv";
+        case 1: return "Spc";
+        case 2: return "Reg";
+        case 3: return "Bas";
+      }
+      break;
+    case 3:
+      switch (enc) {
+        case 0: return "Rel";
+        case 1: return "Dia";
+        case 2: return "Smp";
+        case 3: return "Fam";
+      }
+      break;
+  }
+  return "";
+}
+
+// Get display value for a parameter
+const char* chordParamValue(uint8_t page, uint8_t enc) {
+  uint8_t val = chord.params[page][enc];
+  switch (page) {
+    case 0:
+      switch (enc) {
+        case 0: return qualityNames[val];
+        case 1: return sizeNames[val];
+        case 2: return extensionNames[val];
+        case 3: return tensionNames[val];
+      }
+      break;
+    case 1:
+      switch (enc) {
+        case 0: return addedNames[val];
+        case 1: return suspendNames[val];
+        case 2: return alterNames[val];
+        case 3: return spreadNames[val];
+      }
+      break;
+    case 2:
+      switch (enc) {
+        case 0: return inversionNames[val];
+        case 1: return spacingNames[val];
+        case 2: return registerNames[val];
+        case 3: return bassNames[val];
+      }
+      break;
+    case 3:
+      switch (enc) {
+        case 0: return relationNames[val];
+        case 1: return diatChromNames[val];
+        case 2: return simpleCompNames[val];
+        case 3: return famUnexpNames[val];
+      }
+      break;
+  }
+  return "";
+}
+
+// ==================== CHORD ENGINE ====================
+
+// Quality triad intervals
+const uint8_t qualityIntervals[][3] = {
+  {0, 4, 7},  // Major
+  {0, 3, 7},  // Minor
+  {0, 3, 6},  // Diminished
+  {0, 4, 8},  // Augmented
+  {0, 2, 7},  // Sus2
+  {0, 5, 7},  // Sus4
+};
+
+// Which scale degree index to add for each size (above the triad)
+// Index 0 = scale degree 7, index 1 = degree 9, etc.
+const uint8_t sizeCount[] = { 0, 1, 2, 3, 4 };
+
+void stopChord() {
+  for (uint8_t i = 0; i < chordNoteCount; i++) {
+    Control_Surface.sendNoteOff({chordNotesPlaying[i], Channel_1}, 0);
+  }
+  chordNoteCount = 0;
+}
+
+void playChord(int8_t midiNote) {
+  stopChord();
+  if (midiNote < 0) return;
+
+  uint8_t quality = chord.params[0][0];
+  uint8_t size = chord.params[0][1];
+  uint8_t ext = chord.params[0][2];
+  uint8_t tension = chord.params[0][3];
+
+  // F2 params
+  uint8_t added = chord.params[1][0];
+  uint8_t susp = chord.params[1][1];
+  uint8_t alter = chord.params[1][2];
+  uint8_t spread = chord.params[1][3];
+
+  // F3 params
+  uint8_t inversion = chord.params[2][0];
+  uint8_t spc = chord.params[2][1];
+  uint8_t reg = chord.params[2][2];
+  uint8_t bass = chord.params[2][3];
+
+  // F4 params — harmonic relation determines the root offset
+  uint8_t relation = chord.params[3][0];
+
+  // Determine chord root based on selected note and harmonic relation
+  int8_t chordRoot = midiNote; // default: selected note is root
+
+  if (relation == 1) {
+    // Selected note is the 3rd → root is 4 semitones below (major) or 3 below (minor)
+    // Use quality to determine interval
+    uint8_t thirdInterval = qualityIntervals[quality][1];
+    chordRoot = midiNote - thirdInterval;
+  } else if (relation == 2) {
+    // Selected note is the 5th → root is 7 semitones below
+    chordRoot = midiNote - 7;
+  } else if (relation == 3) {
+    // Selected note is the 7th → root is 10 semitones below (dom7)
+    chordRoot = midiNote - 10;
+  } else if (relation == 4) {
+    // Selected note is an extension → root is 14 below (9th)
+    chordRoot = midiNote - 14;
+  }
+
+  // Clamp chord root to reasonable range
+  chordRoot = constrain(chordRoot, 36, 84);
+
+  // Get scale pattern rotated by keyRoot
+  uint16_t pattern = scalePatterns[keyScale];
+  uint16_t rotated = ((pattern << keyRoot) | (pattern >> (12 - keyRoot))) & 0xFFF;
+
+  // Build list of scale step intervals (semitone distances from root for each scale degree)
+  uint8_t scaleSteps[12];
+  uint8_t scaleStepCount = 0;
+  for (int i = 0; i < 12; i++) {
+    if (rotated & (1 << i)) {
+      scaleSteps[scaleStepCount++] = i;
+    }
+  }
+
+  // Build chord note list (MIDI notes, sorted)
+  uint8_t notes[12];
+  uint8_t noteCount = 0;
+
+  // 1. Add triad from quality — derived from scale degrees
+  // quality determines which scale degrees: Maj=0,2,4 | Min=0,2,4 with flattened 3rd | etc.
+  // Base triad uses scale degrees 0, 2, 4 (root, 3rd, 5th)
+  uint8_t triadDegrees[3] = {0, 2, 4};
+  // quality adjustments: shift the 3rd and/or 5th by ±1 semitone
+  int8_t triadShift[6][3] = {
+    {0, 0, 0},   // Major: root, 3rd, 5th as-is
+    {0, -1, 0},  // Minor: flatten 3rd
+    {0, -1, -1}, // Diminished: flatten 3rd and 5th
+    {0, 0, +1},  // Augmented: sharpen 5th
+    {0, -1, 0},  // Sus2: handled separately
+    {0, 0, 0},   // Sus4: handled separately
+  };
+  for (int i = 0; i < 3; i++) {
+    uint8_t deg = triadDegrees[i];
+    if (deg < scaleStepCount) {
+      int8_t shift = (quality < 6) ? triadShift[quality][i] : 0;
+      notes[noteCount++] = chordRoot + scaleSteps[deg] + shift;
+    }
+  }
+
+  // Sus2/Sus4: replace 3rd (degree 2) with degree 1 (2nd) or degree 3 (4th)
+  if (quality == 4 && scaleStepCount > 1) {
+    // Sus2: replace 3rd with 2nd scale degree
+    if (noteCount > 1) notes[1] = chordRoot + scaleSteps[1];
+  } else if (quality == 5 && scaleStepCount > 3) {
+    // Sus4: replace 3rd with 4th scale degree
+    if (noteCount > 1) notes[1] = chordRoot + scaleSteps[3];
+  }
+
+  // 2. Add scale degrees for size (7th, 9th, 11th, 13th)
+  // Use scale degrees 6, 8, 10, 12 (7th=6th degree above root, etc.)
+  uint8_t sizeDegrees[] = {6, 8, 10, 12};
+  for (uint8_t s = 0; s < sizeCount[size]; s++) {
+    uint8_t deg = sizeDegrees[s];
+    if (deg < scaleStepCount) {
+      notes[noteCount++] = chordRoot + scaleSteps[deg];
+    }
+  }
+
+  // 3. Apply extension — modify specific tones
+  if (ext > 0 && noteCount > 3) {
+    // ext 1=b9, 2=#9, 3=#11, 4=b13
+    // These modify the9th,11th,13th if present
+    switch (ext) {
+      case 1: // b9 — flatten 9th (index 4 in extended chords)
+        if (noteCount > 4) notes[4] -= 1;
+        break;
+      case 2: // #9 — sharpen 9th
+        if (noteCount > 4) notes[4] += 1;
+        break;
+      case 3: // #11 — sharpen 11th (index 5)
+        if (noteCount > 5) notes[5] += 1;
+        break;
+      case 4: // b13 — flatten 13th (index 6)
+        if (noteCount > 6) notes[6] -= 1;
+        break;
+    }
+  }
+
+  // 4. Apply added tone
+  if (added > 0) {
+    uint8_t addedInterval = 0;
+    switch (added) {
+      case 1: addedInterval = 2; break;  // 2nd
+      case 2: addedInterval = 5; break;  // 4th
+      case 3: addedInterval = 9; break;  // 6th
+      case 4: addedInterval = 21; break; // 13th
+    }
+    if (addedInterval > 0) {
+      notes[noteCount++] = chordRoot + addedInterval;
+    }
+  }
+
+  // 5. Apply suspension — replace 3rd with scale-derived 2nd or 4th
+  if (susp > 0 && noteCount > 1) {
+    switch (susp) {
+      case 1: // Sus2 — replace 3rd with 2nd scale degree
+        if (scaleStepCount > 1) notes[1] = chordRoot + scaleSteps[1];
+        break;
+      case 2: // Sus4 — replace 3rd with 4th scale degree
+        if (scaleStepCount > 3) notes[1] = chordRoot + scaleSteps[3];
+        break;
+      case 3: // 2+4 — replace 3rd with both 2nd and 4th
+        if (scaleStepCount > 1) notes[1] = chordRoot + scaleSteps[1];
+        if (scaleStepCount > 3) notes[noteCount++] = chordRoot + scaleSteps[3];
+        break;
+    }
+  }
+
+  // 6. Apply alteration
+  if (alter > 0) {
+    switch (alter) {
+      case 1: // b5 — flatten 5th (index 2)
+        if (noteCount > 2) notes[2] -= 1;
+        break;
+      case 2: // #5 — sharpen 5th
+        if (noteCount > 2) notes[2] += 1;
+        break;
+      case 3: // b9 — flatten 9th
+        if (noteCount > 4) notes[4] -= 1;
+        break;
+      case 4: // #9 — sharpen 9th
+        if (noteCount > 4) notes[4] += 1;
+        break;
+      case 5: // #11 — sharpen 11th
+        if (noteCount > 5) notes[5] += 1;
+        break;
+    }
+  }
+
+  // 7. Apply tension — remove chord tones
+  // Tension 0=Low (all), 1=Med (remove 5th), 2=High (remove 5th and 7th)
+  if (tension >= 1 && noteCount > 2) {
+    // Remove 5th (index 2) by shifting notes down
+    for (uint8_t i = 2; i < noteCount - 1; i++) {
+      notes[i] = notes[i + 1];
+    }
+    noteCount--;
+  }
+  if (tension >= 2 && noteCount > 3) {
+    // Remove 7th (now at index 2 after 5th removal, or index 3 originally)
+    // After removing 5th, 7th is at index 2 (was index 3)
+    for (uint8_t i = 2; i < noteCount - 1; i++) {
+      notes[i] = notes[i + 1];
+    }
+    noteCount--;
+  }
+
+  // 8. Apply spread — duplicate notes across octaves
+  if (spread >= 2 && noteCount > 0) {
+    uint8_t extraOct = (spread == 2) ? 12 : (spread == 3) ? 24 : 0;
+    if (extraOct > 0 && noteCount < 8) {
+      notes[noteCount++] = notes[0] + extraOct;
+    }
+  }
+
+  // 9. Apply voicing — inversion (top voice)
+  // Move the inversion target note to the top
+  if (inversion > 0 && noteCount > 1) {
+    uint8_t invIdx = inversion;
+    if (invIdx < noteCount) {
+      uint8_t topNote = notes[invIdx];
+      // Shift notes down to fill gap
+      for (uint8_t i = invIdx; i < noteCount - 1; i++) {
+        notes[i] = notes[i + 1];
+      }
+      notes[noteCount - 1] = topNote;
+    }
+  }
+
+  // 10. Apply bass — move bass note to bottom
+  if (bass > 0 && bass < noteCount) {
+    uint8_t bassNote = notes[bass];
+    // Shift notes up to make room at bottom
+    for (uint8_t i = bass; i > 0; i--) {
+      notes[i] = notes[i - 1];
+    }
+    notes[0] = bassNote;
+  }
+
+  // 11. Apply register — transpose entire chord
+  int8_t regOffset = 0;
+  switch (reg) {
+    case 0: regOffset = -12; break; // Low
+    case 1: regOffset = -6; break;  // Lo-Med (slightly lower)
+    case 2: regOffset = 6; break;   // Hi-Med (slightly higher)
+    case 3: regOffset = 12; break;  // High
+  }
+
+  // 12. Apply spacing — adjust intervals between voices
+  // Spacing 0=Close (as-is), 1=Med (spread 3rds to 4ths), 2=Open (to 5ths), 3=Wide (to octaves)
+  if (spc > 0 && noteCount > 2) {
+    uint8_t spreadInterval = spc + 2; // 3=4ths, 4=5ths, 5=6ths
+    for (uint8_t i = 1; i < noteCount; i++) {
+      uint8_t minNote = notes[i - 1] + spreadInterval;
+      if (notes[i] < minNote) {
+        notes[i] = minNote;
+      }
+    }
+  }
+
+  // Sort notes
+  for (uint8_t i = 0; i < noteCount - 1; i++) {
+    for (uint8_t j = i + 1; j < noteCount; j++) {
+      if (notes[j] < notes[i]) {
+        uint8_t tmp = notes[i];
+        notes[i] = notes[j];
+        notes[j] = tmp;
+      }
+    }
+  }
+
+  // Apply register offset and clamp to MIDI range
+  for (uint8_t i = 0; i < noteCount; i++) {
+    notes[i] = constrain(notes[i] + regOffset, 36, 96);
+  }
+
+  // Remove duplicates
+  uint8_t unique[12];
+  uint8_t uniqueCount = 0;
+  for (uint8_t i = 0; i < noteCount; i++) {
+    bool dup = false;
+    for (uint8_t j = 0; j < uniqueCount; j++) {
+      if (unique[j] == notes[i]) { dup = true; break; }
+    }
+    if (!dup) unique[uniqueCount++] = notes[i];
+  }
+
+  // Send MIDI notes
+  chordNoteCount = 0;
+  for (uint8_t i = 0; i < uniqueCount && i < 8; i++) {
+    Control_Surface.sendNoteOn({unique[i], Channel_1}, 100);
+    chordNotesPlaying[chordNoteCount++] = unique[i];
+  }
+
+  // Light keyboard LEDs for played notes
+  updateKeyModeLEDs();
+  for (uint8_t i = 0; i < chordNoteCount; i++) {
+    uint8_t pc = chordNotesPlaying[i] % 12;
+    leds[keyLedIndex[pc]] = CRGB(0, 40, 80); // brighter blue for played chord
+  }
+  FastLED.show();
+}
+
 // MIDI LED controller starting at B3 (note 59)
 template<uint8_t RangeLen>
 class CustomNoteLED : public MatchingMIDIInputElement<MIDIMessageType::NoteOn,
@@ -320,16 +821,43 @@ void readKeyModeEncoders() {
     int8_t step = (keyEncAccum[i] > 0) ? 1 : -1;
     keyEncAccum[i] = 0;
     switch (i) {
-      case 0:
+      case 0: {
         keyOctave = constrain(keyOctave + step, -2, 8);
         keyboardBank.select(keyOctave + 2);
+        if (chord.active && chord.heldKeyIndex >= 0) {
+          stopChord();
+          int8_t newNote = 48 + chord.heldKeyIndex + (keyOctave - 3) * 12;
+          chord.noteRoot = newNote;
+          playChord(newNote);
+        }
         break;
-      case 1: keyScale = constrain(keyScale + step, 0, numScales - 1); updateKeyModeLEDs(); break;
-      case 2: keyRoot = constrain(keyRoot + step, 0, 11); updateKeyModeLEDs(); break;
-      case 4: /* TODO: KEY enc4 function */ break;
-      case 5: /* TODO: KEY enc5 function */ break;
-      case 6: /* TODO: KEY enc6 function */ break;
-      case 7: /* TODO: KEY enc7 function */ break;
+      }
+      case 1: {
+        keyScale = constrain(keyScale + step, 0, numScales - 1);
+        updateKeyModeLEDs();
+        if (chord.active && chord.heldKeyIndex >= 0) {
+          stopChord();
+          playChord(chord.noteRoot);
+        }
+        break;
+      }
+      case 2: {
+        keyRoot = constrain(keyRoot + step, 0, 11);
+        updateKeyModeLEDs();
+        if (chord.active && chord.heldKeyIndex >= 0) {
+          stopChord();
+          playChord(chord.noteRoot);
+        }
+        break;
+      }
+      case 4: case 5: case 6: case 7: {
+        if (!chord.active) break;
+        uint8_t enc = i - 4;
+        uint8_t maxVal = chordParamMax(chord.pageIndex, enc);
+        chord.params[chord.pageIndex][enc] = constrain(chord.params[chord.pageIndex][enc] + step, 0, maxVal);
+        if (chord.noteRoot >= 0) playChord(chord.noteRoot);
+        break;
+      }
     }
   }
 }
@@ -385,6 +913,15 @@ public:
     if (seqModeActive) {
       u8g2.setCursor(42, 12);
       u8g2.print("SEQ MODE");
+      return;
+    }
+    if (chord.active) {
+      u8g2.setCursor(24, 12);
+      u8g2.print("DISCOVERY");
+      char pageBuf[8];
+      snprintf(pageBuf, sizeof(pageBuf), "M1/F%d", chord.pageIndex + 1);
+      u8g2.setCursor(104, 12);
+      u8g2.print(pageBuf);
       return;
     }
     if (keyModeActive) {
@@ -529,12 +1066,53 @@ public:
     const int colX[] = { 2, 26, 60, 90 };
     const int colW[] = { 18, 30, 24, 30 };
     for (int i = 0; i < 4; i++) {
-      u8g2.setCursor(colX[i], 26);
+      u8g2.setCursor(colX[i], 24);
       u8g2.print(labels[i]);
       int valW = u8g2.getStrWidth(values[i]);
       int vx = colX[i] + (colW[i] - valW) / 2;
-      u8g2.setCursor(vx, 40);
+      u8g2.setCursor(vx, 33);
       u8g2.print(values[i]);
+    }
+
+    u8g2.sendBuffer();
+  }
+
+  void displayDiscoveryMode() {
+    u8g2.clearBuffer();
+    u8g2.setFont(u8g2_font_5x7_tr);
+    drawHeader();
+
+    const int colX[] = { 2, 26, 60, 90 };
+    const int colW[] = { 18, 30, 24, 30 };
+
+    // Row 1-2: enc0-3 (KEY MODE params) — same layout as displayKeyMode
+    const char* row1Labels[] = { "Oct", "Scale", "Root", "Chord" };
+    const char* row1Values[4];
+    char octBuf[5];
+    snprintf(octBuf, sizeof(octBuf), "%d", keyOctave);
+    row1Values[0] = octBuf;
+    row1Values[1] = scaleNames[keyScale];
+    row1Values[2] = rootNames[keyRoot];
+    row1Values[3] = keyChordOn ? "ON" : "OFF";
+    for (int i = 0; i < 4; i++) {
+      u8g2.setCursor(colX[i], 24);
+      u8g2.print(row1Labels[i]);
+      int valW = u8g2.getStrWidth(row1Values[i]);
+      int vx = colX[i] + (colW[i] - valW) / 2;
+      u8g2.setCursor(vx, 33);
+      u8g2.print(row1Values[i]);
+    }
+
+    // Row 3-4: enc4-7 (F page params)
+    for (int i = 0; i < 4; i++) {
+      const char* label = chordParamLabel(chord.pageIndex, i);
+      const char* value = chordParamValue(chord.pageIndex, i);
+      u8g2.setCursor(colX[i], 45);
+      u8g2.print(label);
+      int valW = u8g2.getStrWidth(value);
+      int vx = colX[i] + (colW[i] - valW) / 2;
+      u8g2.setCursor(vx, 54);
+      u8g2.print(value);
     }
 
     u8g2.sendBuffer();
@@ -807,7 +1385,34 @@ void handleControlButton(ButtonMap* button, bool pressed) {
     Serial.print("CONTROL pressed: ");
     Serial.println(button->name);
 
-    // Always send the MIDI note for control buttons on Channel_1
+    // In KEY MODE: control buttons do NOT send MIDI (except SEQ, already handled)
+    // Handle M1 and F1-F4 for Discovery Mode
+    if (keyModeActive) {
+      if (strcmp(button->name, "M1") == 0) {
+        // Toggle Discovery Mode
+        chord.active = !chord.active;
+        if (chord.active) {
+          chord.pageIndex = 0;
+          Serial.println("  -> Entered Discovery Mode");
+        } else {
+          stopChord();
+          chord.noteRoot = -1;
+          Serial.println("  -> Exited Discovery Mode");
+        }
+        return;
+      }
+      if (chord.active) {
+        // F1-F4 switch pages
+        if (strcmp(button->name, "F1") == 0) { chord.pageIndex = 0; Serial.println("  -> F1 selected"); return; }
+        if (strcmp(button->name, "F2") == 0) { chord.pageIndex = 1; Serial.println("  -> F2 selected"); return; }
+        if (strcmp(button->name, "F3") == 0) { chord.pageIndex = 2; Serial.println("  -> F3 selected"); return; }
+        if (strcmp(button->name, "F4") == 0) { chord.pageIndex = 3; Serial.println("  -> F4 selected"); return; }
+      }
+      // All other control buttons: no MIDI in KEY MODE
+      return;
+    }
+
+    // Normal mode: send MIDI for control buttons
     Control_Surface.sendNoteOn({button->midiNote, Channel_1}, 127);
 
     // Handle mode switching based on button
@@ -831,6 +1436,9 @@ void handleControlButton(ButtonMap* button, bool pressed) {
     Serial.print("CONTROL released: ");
     Serial.println(button->name);
     
+    // In KEY MODE: skip note off (no MIDI was sent)
+    if (keyModeActive) return;
+
     // Always send note off on Channel_1
     Control_Surface.sendNoteOff({button->midiNote, Channel_1}, 0);
     
@@ -868,6 +1476,12 @@ void handleControlButton(ButtonMap* button, bool pressed) {
               Serial.println("  -> Entered KEY MODE display");
               display.displayKeyMode();
             } else {
+              if (chord.active) {
+                stopChord();
+                chord.active = false;
+                chord.noteRoot = -1;
+                chord.heldKeyIndex = -1;
+              }
               restoreKeyEncPositions();
               enableAllEncoders();
               for (int i = 0; i < 12; i++) leds[keyLedIndex[i]] = CRGB::Black;
@@ -898,6 +1512,22 @@ void handleKeyboardButton(ButtonMap* button, bool pressed) {
   // Map button to keyNotes index (midiNote 84-95 → index 0-11)
   int keyIndex = button->midiNote - 84;
   if (keyIndex < 0 || keyIndex >= 12) return;
+
+  // Discovery Mode: play chord based on pressed note
+  if (chord.active) {
+    if (pressed) {
+      int8_t midiNote = 48 + keyIndex + (keyOctave - 3) * 12;
+      chord.noteRoot = midiNote;
+      chord.heldKeyIndex = keyIndex;
+      playChord(midiNote);
+    } else {
+      stopChord();
+      chord.noteRoot = -1;
+      chord.heldKeyIndex = -1;
+      updateKeyModeLEDs();
+    }
+    return;
+  }
 
   // In KEY mode, only send notes that are in the selected scale
   if (keyModeActive && !isNoteInScale(keyIndex)) {
@@ -1110,7 +1740,10 @@ void loop() {
   } else if (keyModeActive) {
     readKeyModeEncoders();
     if (now - lastDisplayUpdate > 100) {
-      display.displayKeyMode();
+      if (chord.active)
+        display.displayDiscoveryMode();
+      else
+        display.displayKeyMode();
       lastDisplayUpdate = now;
     }
   }
