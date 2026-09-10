@@ -526,11 +526,14 @@ public:
     snprintf(octBuf, sizeof(octBuf), "%d", keyOctave);
     values[0] = octBuf;
 
+    const int colX[] = { 2, 26, 60, 90 };
+    const int colW[] = { 18, 30, 24, 30 };
     for (int i = 0; i < 4; i++) {
-      int x = i * 32 + 2;
-      u8g2.setCursor(x, 26);
+      u8g2.setCursor(colX[i], 26);
       u8g2.print(labels[i]);
-      u8g2.setCursor(x, 40);
+      int valW = u8g2.getStrWidth(values[i]);
+      int vx = colX[i] + (colW[i] - valW) / 2;
+      u8g2.setCursor(vx, 40);
       u8g2.print(values[i]);
     }
 
