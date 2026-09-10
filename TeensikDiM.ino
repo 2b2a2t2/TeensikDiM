@@ -6,6 +6,55 @@
 
 USING_CS_NAMESPACE;
 
+// ============================================================
+// CHORD MODEL TYPES (defined early for Arduino preprocessor)
+// ============================================================
+
+// ChordRole — semantic identity of each chord tone
+enum ChordRole : uint8_t {
+  ROLE_ROOT,
+  ROLE_THIRD,
+  ROLE_FIFTH,
+  ROLE_SEVENTH,
+  ROLE_NINTH,
+  ROLE_ELEVENTH,
+  ROLE_THIRTEENTH,
+  ROLE_ADDED,
+  ROLE_COUNT
+};
+
+// ChordTone — a single tone within a chord structure
+struct ChordTone {
+  ChordRole role;
+  uint8_t pitchClass;    // 0-11, semitones above chord root
+  uint8_t octaveOffset;  // 0 = root octave, 1 = +12, 2 = +24
+  bool present;          // active in the chord
+  bool altered;          // Alteration has modified pitchClass
+};
+
+// ChordStructure — complete musical representation of a chord
+struct ChordStructure {
+  ChordTone tones[ROLE_COUNT];  // indexed by ChordRole
+  uint8_t toneCount;            // count of present tones
+  uint8_t rootMIDI;             // absolute MIDI note of chord root
+  uint8_t rootPitchClass;       // 0-11, pitch class of chord root
+};
+
+// Scale info for Discovery
+struct ScaleInfo {
+  uint8_t pitchClasses[12];  // pitch classes in scale, sorted ascending
+  uint8_t count;             // number of pitch classes
+};
+
+// Discovery candidate
+struct DiscoveryCandidate {
+  uint8_t relation;          // 0=Rt, 1=3rd, 2=5th, 3=7th, 4=Ext
+  int8_t rootDegreeOffset;   // degrees to subtract from selected degree
+  uint8_t requiredSize;      // minimum Size needed (0=Tri, 1=7th, 2=9th, 3=11th, 4=13th)
+  uint8_t rootPitchClass;    // computed root pitch class
+  bool valid;                // false if degree arithmetic produces invalid root
+};
+
 // ==================== BANKABLE KEYBOARD ====================
 // Custom MIDI output element for MPR121 touch → MIDI Note with bank support
 
@@ -185,35 +234,35 @@ void updateKeyModeLEDs() {
 
 // ==================== DISCOVERY MODE (M1) ====================
 
-// F1 — CHORD parameters
+// F1 — CHORD parameters (controlled by ENC4-7)
 const char* qualityNames[] = { "Maj", "Min", "Dim", "Aug", "Sus2", "Sus4" };
 const uint8_t numQualities = 6;
 
 const char* sizeNames[] = { "Tri", "7th", "9th", "11th", "13th" };
 const uint8_t numSizes = 5;
 
-const char* extensionNames[] = { "Off", "b9", "#9", "#11", "b13" };
-const uint8_t numExtensions = 5;
+const char* extensionNames[] = { "Off", "9", "11", "13" };
+const uint8_t numExtensions = 4;
 
-const char* tensionNames[] = { "Low", "Med", "High" };
-const uint8_t numTensions = 3;
+const char* densityNames[] = { "Full", "Reduced", "Sparse" };
+const uint8_t numDensities = 3;
 
-// F2 — COLOR parameters
+// F2 — COLOR parameters (controlled by ENC4-7)
 const char* addedNames[] = { "Off", "2", "4", "6", "13" };
 const uint8_t numAdded = 5;
 
 const char* suspendNames[] = { "Off", "Sus2", "Sus4", "2+4" };
 const uint8_t numSuspensions = 4;
 
-const char* alterNames[] = { "Off", "b5", "#5", "b9", "#9", "#11" };
-const uint8_t numAlterations = 6;
+const char* alterNames[] = { "Off", "b5", "#5", "b9", "#9", "#11", "b13" };
+const uint8_t numAlterations = 7;
 
 const char* spreadNames[] = { "Tight", "Med", "Open", "Wide" };
 const uint8_t numSpreads = 4;
 
-// F3 — VOICING parameters
-const char* inversionNames[] = { "Root", "1st", "2nd", "3rd" };
-const uint8_t numInversions = 4;
+// F3 — VOICING parameters (controlled by ENC4-7)
+const char* topVoiceNames[] = { "Root", "3rd", "5th", "7th" };
+const uint8_t numTopVoices = 4;
 
 const char* spacingNames[] = { "Close", "Med", "Open", "Wide" };
 const uint8_t numSpacings = 4;
@@ -224,7 +273,7 @@ const uint8_t numRegisters = 4;
 const char* bassNames[] = { "Root", "3rd", "5th", "7th" };
 const uint8_t numBassOptions = 4;
 
-// F4 — DISCOVERY parameters
+// F4 — DISCOVERY parameters (controlled by ENC4-7)
 const char* relationNames[] = { "Rt", "3rd", "5th", "7th", "Ext" };
 const uint8_t numRelations = 5;
 
@@ -241,21 +290,22 @@ const uint8_t numFamUnexp = 3;
 struct ChordState {
   uint8_t pageIndex;         // 0=F1, 1=F2, 2=F3, 3=F4
   uint8_t params[4][4];      // [page][encoder] — current value per param
-  int8_t noteRoot;            // MIDI note of pressed keyboard key, -1 if none
-  int8_t heldKeyIndex;        // physical key index (0-11) held, -1 if none
+  int8_t noteRoot;            // MIDI note of most recently pressed key, -1 if none
+  int8_t heldKeyIndex;        // physical key index (0-11) of most recently pressed, -1 if none
+  uint8_t heldCount;          // number of keyboard notes currently held
   bool active;                // true when Discovery Mode is on
 };
 
 ChordState chord = {
   0,
   {{0, 0, 0, 0}, {0, 0, 0, 0}, {0, 1, 1, 0}, {0, 0, 0, 0}},
-  -1, -1, false
+  -1, -1, 0, false
 };
 
 uint8_t chordNotesPlaying[8] = {};
 uint8_t chordNoteCount = 0;
 
-// Get parameter max value for a given page and encoder
+// Get parameter max value for a given page and encoder (ENC4-7 → enc 0-3)
 uint8_t chordParamMax(uint8_t page, uint8_t enc) {
   switch (page) {
     case 0: // F1 — CHORD
@@ -263,7 +313,7 @@ uint8_t chordParamMax(uint8_t page, uint8_t enc) {
         case 0: return numQualities - 1;
         case 1: return numSizes - 1;
         case 2: return numExtensions - 1;
-        case 3: return numTensions - 1;
+        case 3: return numDensities - 1;
       }
       break;
     case 1: // F2 — COLOR
@@ -276,7 +326,7 @@ uint8_t chordParamMax(uint8_t page, uint8_t enc) {
       break;
     case 2: // F3 — VOICING
       switch (enc) {
-        case 0: return numInversions - 1;
+        case 0: return numTopVoices - 1;
         case 1: return numSpacings - 1;
         case 2: return numRegisters - 1;
         case 3: return numBassOptions - 1;
@@ -302,7 +352,7 @@ const char* chordParamLabel(uint8_t page, uint8_t enc) {
         case 0: return "Qual";
         case 1: return "Size";
         case 2: return "Ext";
-        case 3: return "Tens";
+        case 3: return "Dens";
       }
       break;
     case 1:
@@ -315,7 +365,7 @@ const char* chordParamLabel(uint8_t page, uint8_t enc) {
       break;
     case 2:
       switch (enc) {
-        case 0: return "Inv";
+        case 0: return "Top";
         case 1: return "Spc";
         case 2: return "Reg";
         case 3: return "Bas";
@@ -342,7 +392,7 @@ const char* chordParamValue(uint8_t page, uint8_t enc) {
         case 0: return qualityNames[val];
         case 1: return sizeNames[val];
         case 2: return extensionNames[val];
-        case 3: return tensionNames[val];
+        case 3: return densityNames[val];
       }
       break;
     case 1:
@@ -355,7 +405,7 @@ const char* chordParamValue(uint8_t page, uint8_t enc) {
       break;
     case 2:
       switch (enc) {
-        case 0: return inversionNames[val];
+        case 0: return topVoiceNames[val];
         case 1: return spacingNames[val];
         case 2: return registerNames[val];
         case 3: return bassNames[val];
@@ -388,6 +438,635 @@ const uint8_t qualityIntervals[][3] = {
 // Which scale degree index to add for each size (above the triad)
 // Index 0 = scale degree 7, index 1 = degree 9, etc.
 const uint8_t sizeCount[] = { 0, 1, 2, 3, 4 };
+
+// ============================================================
+// CHORD ENGINE — PROCESSING PRECEDENCE
+// ============================================================
+//
+// Each stage may ONLY modify what is listed under "Modifies".
+// No later stage may silently redefine the semantic result
+// of an earlier stage.
+//
+// Stage 1: Discovery    → determines chord root and required size
+//   Modifies: external variables (chordRoot, requiredSize)
+//   Does NOT touch ChordStructure yet.
+//
+// Stage 2: Quality      → defines triad intervals
+//   Modifies: tones[THIRD].pitchClass, tones[FIFTH].pitchClass
+//   Allowed: ±1 semitone chromatic shift on 3rd and/or 5th
+//
+// Stage 3: Size         → adds diatonic extensions
+//   Modifies: .present flag on SEVENTH/NINTH/ELEVENTH/THIRTEENTH
+//   Allowed: only setting .present = true
+//
+// Stage 4: Extension    → structurally adds extension roles
+//   Modifies: .present flag on NINTH/ELEVENTH/THIRTEENTH
+//   Allowed: only setting .present = true
+//   Note: additive with Size. Both can set the same role present.
+//
+// Stage 5: Added Tone   → adds non-chord tones
+//   Modifies: tones[ADDED].present, .pitchClass
+//   Allowed: setting pitchClass and present on ROLE_ADDED only
+//
+// Stage 6: Suspension   → replaces 3rd pitch class
+//   Modifies: tones[THIRD].pitchClass
+//   Allowed: replacing pitchClass only (not role, not present)
+//
+// Stage 7: Alteration   → chromatically shifts present tones
+//   Modifies: target tone's .pitchClass ±1, .altered flag
+//   Allowed: only on already-present roles
+//   Rule: ignore if target role not present
+//
+// Stage 8: Density      → removes tones for voicing sparsity
+//   Modifies: .present = false on targeted roles
+//   Allowed: only setting .present = false
+//
+// Stage 9: Top Voice / Bass → role-based voicing reorder
+//   Modifies: voicingSlot assignment
+//   Allowed: only reordering voicingSlot values
+//
+// Stage 10: Spacing     → minimum intervals between voices
+//   Modifies: pitchClass, octaveOffset
+//   Allowed: pushing tones up to meet minimum interval
+//
+// Stage 11: Spread      → octave doublings
+//   Modifies: octaveOffset
+//   Allowed: adding octave doublings
+//
+// Stage 12: Register    → global transposition
+//   Modifies: global octave offset
+//   Allowed: transposing all tones by fixed interval
+//
+// Stage 13: MIDI Output → sends NoteOn messages
+//   Modifies: nothing (read-only)
+// ============================================================
+
+// ============================================================
+// SCALE UTILITIES
+// ============================================================
+
+// Build ScaleInfo from current keyRoot and keyScale
+ScaleInfo buildScaleInfo() {
+  ScaleInfo info;
+  uint16_t pattern = scalePatterns[keyScale];
+  uint16_t rotated = ((pattern << keyRoot) | (pattern >> (12 - keyRoot))) & 0xFFF;
+  info.count = 0;
+  for (uint8_t i = 0; i < 12; i++) {
+    if (rotated & (1 << i)) {
+      info.pitchClasses[info.count++] = i;
+    }
+  }
+  return info;
+}
+
+// Get rotated scale bitmask
+uint16_t getRotatedScale() {
+  uint16_t pattern = scalePatterns[keyScale];
+  return ((pattern << keyRoot) | (pattern >> (12 - keyRoot))) & 0xFFF;
+}
+
+// Find scale degree of a pitch class (-1 if not in scale)
+int8_t getScaleDegree(uint8_t pitchClass, const ScaleInfo &scale) {
+  for (uint8_t i = 0; i < scale.count; i++) {
+    if (scale.pitchClasses[i] == pitchClass) return i;
+  }
+  return -1;
+}
+
+// ============================================================
+// DISCOVERY — CANDIDATE GENERATION
+// ============================================================
+
+// Build list of Discovery candidates for a given selected note
+// Returns number of valid candidates (0-5)
+uint8_t buildDiscoveryCandidates(
+  uint8_t selectedNoteMIDI,
+  uint8_t quality,
+  const ScaleInfo &scale,
+  uint8_t diatChromValue,
+  DiscoveryCandidate candidates[5]
+) {
+  uint8_t selectedPC = selectedNoteMIDI % 12;
+  int8_t selectedDegree = getScaleDegree(selectedPC, scale);
+
+  // Degree offsets for each relation: how many scale degrees to go DOWN
+  // to find the chord root from the selected note's degree
+  const int8_t relationDegreeOffsets[5] = {
+    0,   // Rt: selected is root (offset 0)
+    -2,  // 3rd: selected is 3rd, go down 2 scale degrees to root
+    -4,  // 5th: selected is 5th, go down 4 scale degrees to root
+    -6,  // 7th: selected is 7th, go down 6 scale degrees to root
+    -8   // Ext: selected is extension, go down 8 scale degrees to root
+  };
+
+  // Minimum size required for each relation
+  const uint8_t relationMinSize[5] = {
+    0,  // Rt: triad sufficient
+    0,  // 3rd: triad sufficient
+    0,  // 5th: triad sufficient
+    1,  // 7th: needs Size >= 7th
+    2   // Ext: needs Size >= 9th
+  };
+
+  uint8_t validCount = 0;
+
+  for (uint8_t r = 0; r < 5; r++) {
+    candidates[r].relation = r;
+    candidates[r].rootDegreeOffset = relationDegreeOffsets[r];
+    candidates[r].requiredSize = relationMinSize[r];
+    candidates[r].valid = false;
+    candidates[r].rootPitchClass = 0;
+
+    if (selectedDegree < 0) {
+      // Selected note is not in scale — only allow Relation=0 (Rt) for chromatic
+      if (r == 0 && diatChromValue > 0) {
+        candidates[r].valid = true;
+        candidates[r].rootPitchClass = selectedPC;
+        validCount++;
+      }
+      continue;
+    }
+
+    // Compute root degree by going DOWN from selected degree
+    int16_t rootDegree = (int16_t)selectedDegree + relationDegreeOffsets[r];
+    // Wrap around the scale
+    while (rootDegree < 0) rootDegree += scale.count;
+    rootDegree = rootDegree % scale.count;
+
+    uint8_t rootPC = scale.pitchClasses[rootDegree];
+    candidates[r].rootPitchClass = rootPC;
+    candidates[r].valid = true;
+
+    // Diatonic filter: check if all tones required by this candidate
+    // (triad at minimum) are in the scale
+    if (diatChromValue == 0) {
+      // Fully diatonic: triad tones must all be in scale
+      // Build a temporary triad from rootPC in this scale
+      uint8_t triadDegrees[3] = {0, 2, 4};
+      bool allInScale = true;
+      for (uint8_t t = 0; t < 3; t++) {
+        int16_t deg = rootDegree + triadDegrees[t];
+        while (deg >= scale.count) deg -= scale.count;
+        uint8_t triadPC = scale.pitchClasses[deg];
+        // Apply quality shift to check
+        int8_t shift = 0;
+        if (t == 1) { // 3rd
+          if (quality == 1 || quality == 3 || quality == 4) shift = -1; // Minor/Dim/Sus2
+        } else if (t == 2) { // 5th
+          if (quality == 2) shift = -1; // Dim
+          else if (quality == 3) shift = +1; // Aug
+        }
+        uint8_t finalPC = (triadPC + shift + 12) % 12;
+        // Check if this PC is in the scale
+        bool found = false;
+        for (uint8_t s = 0; s < scale.count; s++) {
+          if (scale.pitchClasses[s] == finalPC) { found = true; break; }
+        }
+        if (!found) { allInScale = false; break; }
+      }
+      if (!allInScale) {
+        candidates[r].valid = false;
+      } else {
+        validCount++;
+      }
+    } else {
+      // Chromatic or mixed — allow
+      validCount++;
+    }
+  }
+
+  return validCount;
+}
+
+// Get chord root MIDI note from a candidate
+int8_t computeCandidateRootMIDI(
+  const DiscoveryCandidate &candidate,
+  uint8_t selectedNoteMIDI,
+  const ScaleInfo &scale
+) {
+  uint8_t selectedPC = selectedNoteMIDI % 12;
+  int8_t selectedDegree = getScaleDegree(selectedPC, scale);
+  if (selectedDegree < 0) return selectedNoteMIDI; // fallback
+
+  // Compute how many semitones to go down from selected note to root
+  uint8_t rootPC = candidate.rootPitchClass;
+  int16_t semitoneOffset = (int16_t)rootPC - (int16_t)selectedPC;
+  if (semitoneOffset > 0) semitoneOffset -= 12; // ensure we go DOWN
+  return constrain(selectedNoteMIDI + semitoneOffset, 36, 84);
+}
+
+// ============================================================
+// CHORDSTRUCTURE — INITIALIZATION
+// ============================================================
+
+// Initialize ChordStructure with all tones absent
+void initChordStructure(ChordStructure &chord) {
+  chord.toneCount = 0;
+  chord.rootMIDI = 60;
+  chord.rootPitchClass = 0;
+  for (uint8_t i = 0; i < ROLE_COUNT; i++) {
+    chord.tones[i].role = (ChordRole)i;
+    chord.tones[i].pitchClass = 0;
+    chord.tones[i].octaveOffset = 0;
+    chord.tones[i].present = false;
+    chord.tones[i].altered = false;
+  }
+}
+
+// ============================================================
+// STAGE 2: QUALITY — define triad intervals
+// ============================================================
+
+// Quality adjustments to the 3rd and 5th pitch classes
+// [quality][0]=3rd shift, [quality][1]=5th shift
+const int8_t qualityShifts[6][2] = {
+  { 0,  0 },  // Major: 3rd as-is, 5th as-is
+  {-1,  0 },  // Minor: flatten 3rd
+  {-1, -1 },  // Diminished: flatten 3rd and 5th
+  { 0, +1 },  // Augmented: sharpen 5th
+  {-1,  0 },  // Sus2: handled separately (replaces 3rd)
+  { 0,  0 },  // Sus4: handled separately (replaces 3rd)
+};
+
+void applyQuality(ChordStructure &chord, uint8_t quality) {
+  const ScaleInfo scale = buildScaleInfo();
+  uint8_t rootDegree = 0; // root is always degree 0
+
+  // 3rd: scale degree 2, then apply quality shift
+  uint8_t thirdDegree = (rootDegree + 2) % scale.count;
+  uint8_t thirdPC = scale.pitchClasses[thirdDegree];
+  int8_t shift = (quality < 6) ? qualityShifts[quality][0] : 0;
+  chord.tones[ROLE_THIRD].pitchClass = (thirdPC + shift + 12) % 12;
+
+  // 5th: scale degree 4, then apply quality shift
+  uint8_t fifthDegree = (rootDegree + 4) % scale.count;
+  uint8_t fifthPC = scale.pitchClasses[fifthDegree];
+  shift = (quality < 6) ? qualityShifts[quality][1] : 0;
+  chord.tones[ROLE_FIFTH].pitchClass = (fifthPC + shift + 12) % 12;
+
+  // Root is always present with pitchClass 0
+  chord.tones[ROLE_ROOT].pitchClass = 0;
+  chord.tones[ROLE_ROOT].octaveOffset = 0;
+  chord.tones[ROLE_ROOT].present = true;
+  chord.tones[ROLE_ROOT].altered = false;
+
+  // Mark triad as present
+  chord.tones[ROLE_THIRD].octaveOffset = 0;
+  chord.tones[ROLE_THIRD].present = true;
+  chord.tones[ROLE_THIRD].altered = false;
+
+  chord.tones[ROLE_FIFTH].octaveOffset = 0;
+  chord.tones[ROLE_FIFTH].present = true;
+  chord.tones[ROLE_FIFTH].altered = false;
+
+  chord.toneCount = 3; // triad
+}
+
+// ============================================================
+// STAGE 3: SIZE — diatonic extension traversal
+// ============================================================
+
+// Extension roles in order: 7th, 9th, 11th, 13th
+// Each step advances by 2 scale degrees from the previous
+// With octave carry: when degree >= scaleNoteCount, wrap and +1 octave
+const ChordRole sizeRoles[4] = {
+  ROLE_SEVENTH, ROLE_NINTH, ROLE_ELEVENTH, ROLE_THIRTEENTH
+};
+
+void applySize(ChordStructure &chord, uint8_t size) {
+  if (size == 0) return; // Tri: no extensions
+
+  const ScaleInfo scale = buildScaleInfo();
+
+  // Triad uses degrees 0, 2, 4 (root, 3rd, 5th)
+  // Extensions start at degree 6 (7th), then 8 (9th), 10 (11th), 12 (13th)
+  // Each is 2 scale degrees apart
+  uint8_t extDegrees[4] = {6, 8, 10, 12};
+
+  for (uint8_t s = 0; s < size && s < 4; s++) {
+    uint8_t degree = extDegrees[s];
+    uint8_t octaveOff = 0;
+
+    // Diatonic carry: wrap degree around scale length
+    while (degree >= scale.count) {
+      degree -= scale.count;
+      octaveOff++;
+    }
+
+    uint8_t pc = scale.pitchClasses[degree];
+
+    chord.tones[sizeRoles[s]].pitchClass = pc;
+    chord.tones[sizeRoles[s]].octaveOffset = octaveOff;
+    chord.tones[sizeRoles[s]].present = true;
+    chord.tones[sizeRoles[s]].altered = false;
+    chord.toneCount++;
+  }
+}
+
+// ============================================================
+// STAGE 4: EXTENSION — structurally add extension roles
+// ============================================================
+
+void applyExtension(ChordStructure &chord, uint8_t extension) {
+  if (extension == 0) return; // Off
+
+  const ScaleInfo scale = buildScaleInfo();
+
+  // Extension values: 1=9th, 2=11th, 3=13th
+  // sizeRoles[0]=7th, [1]=9th, [2]=11th, [3]=13th
+  // Extension 1=9th → sizeRoles[1], Extension 2=11th → sizeRoles[2], Extension 3=13th → sizeRoles[3]
+  uint8_t roleIndex = extension; // 1→1, 2→2, 3→3
+
+  if (roleIndex >= 4) return;
+
+  ChordRole role = sizeRoles[roleIndex];
+
+  if (!chord.tones[role].present) {
+    // Not yet present — add it with diatonic carry
+    uint8_t extDegrees[4] = {6, 8, 10, 12};
+    uint8_t degree = extDegrees[roleIndex];
+    uint8_t octaveOff = 0;
+    while (degree >= scale.count) {
+      degree -= scale.count;
+      octaveOff++;
+    }
+    chord.tones[role].pitchClass = scale.pitchClasses[degree];
+    chord.tones[role].octaveOffset = octaveOff;
+    chord.tones[role].present = true;
+    chord.tones[role].altered = false;
+    chord.toneCount++;
+  }
+}
+
+// ============================================================
+// STAGE 5: ADDED TONE — add non-chord tones
+// ============================================================
+
+// Added tone pitch classes relative to root (diatonic where possible)
+// Off=absent, 2nd=scale degree 1, 4th=scale degree 3, 6th=scale degree 5, 13th=scale degree 5+oct
+const uint8_t addedDegrees[4] = {1, 3, 5, 5}; // scale degrees for 2, 4, 6, 13
+const uint8_t addedOctaves[4] = {0, 0, 0, 1}; // octave offset for each
+
+void applyAdded(ChordStructure &chord, uint8_t added) {
+  if (added == 0) return; // Off
+
+  const ScaleInfo scale = buildScaleInfo();
+  uint8_t idx = added - 1; // 1→0, 2→1, 3→2, 4→3
+
+  if (idx >= 4) return;
+
+  uint8_t degree = addedDegrees[idx];
+  uint8_t octaveOff = addedOctaves[idx];
+
+  // Wrap degree for 13th (may exceed scale length)
+  while (degree >= scale.count) {
+    degree -= scale.count;
+    octaveOff++;
+  }
+
+  uint8_t pc = scale.pitchClasses[degree];
+
+  chord.tones[ROLE_ADDED].pitchClass = pc;
+  chord.tones[ROLE_ADDED].octaveOffset = octaveOff;
+  chord.tones[ROLE_ADDED].present = true;
+  chord.tones[ROLE_ADDED].altered = false;
+  chord.toneCount++;
+}
+
+// ============================================================
+// STAGE 6: SUSPENSION — replace 3rd pitch class
+// ============================================================
+
+void applySuspension(ChordStructure &chord, uint8_t suspension) {
+  if (suspension == 0) return; // Off
+
+  const ScaleInfo scale = buildScaleInfo();
+
+  // Suspension replaces the 3rd's pitch class
+  // Sus2: replace 3rd with 2nd scale degree (degree 1)
+  // Sus4: replace 3rd with 4th scale degree (degree 3)
+  // 2+4: replace 3rd with 2nd AND add 4th (handled specially)
+  uint8_t targetDegree;
+  if (suspension == 1) {
+    targetDegree = 1; // 2nd
+  } else if (suspension == 2) {
+    targetDegree = 3; // 4th
+  } else {
+    targetDegree = 1; // 2+4: replace 3rd with 2nd, then add 4th in applyAdded
+  }
+
+  uint8_t pc = scale.pitchClasses[targetDegree % scale.count];
+  chord.tones[ROLE_THIRD].pitchClass = pc;
+  // Note: Suspension does NOT change the role or present flag
+
+  // For 2+4: also add the 4th as an added tone
+  if (suspension == 3) {
+    uint8_t fourthPC = scale.pitchClasses[3 % scale.count];
+    // Check if Added tone is already present
+    if (chord.tones[ROLE_ADDED].present) {
+      // Override with 4th
+      chord.tones[ROLE_ADDED].pitchClass = fourthPC;
+      chord.tones[ROLE_ADDED].octaveOffset = 0;
+    } else {
+      chord.tones[ROLE_ADDED].pitchClass = fourthPC;
+      chord.tones[ROLE_ADDED].octaveOffset = 0;
+      chord.tones[ROLE_ADDED].present = true;
+      chord.tones[ROLE_ADDED].altered = false;
+      chord.toneCount++;
+    }
+  }
+}
+
+// ============================================================
+// STAGE 7: ALTERATION — chromatically shift present tones
+// ============================================================
+
+// Alteration target mapping:
+// 1=b5 → ROLE_FIFTH, 2=#5 → ROLE_FIFTH
+// 3=b9 → ROLE_NINTH, 4=#9 → ROLE_NINTH
+// 5=#11 → ROLE_ELEVENTH
+// 6=b13 → ROLE_THIRTEENTH
+const ChordRole alterTargets[6] = {
+  ROLE_FIFTH, ROLE_FIFTH, ROLE_NINTH, ROLE_NINTH, ROLE_ELEVENTH, ROLE_THIRTEENTH
+};
+const int8_t alterShifts[6] = {
+  -1, +1, -1, +1, +1, -1
+};
+
+void applyAlteration(ChordStructure &chord, uint8_t alteration) {
+  if (alteration == 0) return; // Off
+
+  uint8_t idx = alteration - 1;
+  if (idx >= 6) return;
+
+  ChordRole target = alterTargets[idx];
+
+  // Only alter if the target role is present
+  if (!chord.tones[target].present) return;
+
+  chord.tones[target].pitchClass = (chord.tones[target].pitchClass + alterShifts[idx] + 12) % 12;
+  chord.tones[target].altered = true;
+}
+
+// ============================================================
+// STAGE 8: DENSITY — remove tones for voicing sparsity
+// ============================================================
+
+void applyDensity(ChordStructure &chord, uint8_t density) {
+  if (density == 0) return; // Full: no removal
+
+  // Reduced: hide 5th
+  if (density >= 1 && chord.tones[ROLE_FIFTH].present) {
+    chord.tones[ROLE_FIFTH].present = false;
+    chord.toneCount--;
+  }
+
+  // Sparse: also hide 7th
+  if (density >= 2 && chord.tones[ROLE_SEVENTH].present) {
+    chord.tones[ROLE_SEVENTH].present = false;
+    chord.toneCount--;
+  }
+}
+
+// ============================================================
+// STAGE 9: TOP VOICE / BASS — role-based voicing reorder
+// ============================================================
+
+// Find a present tone by role, fallback to ROLE_ROOT
+ChordTone* findToneByRole(ChordStructure &chord, ChordRole role) {
+  if (chord.tones[role].present) return &chord.tones[role];
+  return &chord.tones[ROLE_ROOT]; // fallback
+}
+
+// ============================================================
+// STAGE 10: SPACING — minimum intervals between voices
+// ============================================================
+
+// Spacing intervals (semitones) for Close/Med/Open/Wide
+const uint8_t spacingIntervals[4] = {0, 3, 4, 5}; // m3, M3, P4
+
+// ============================================================
+// STAGE 11: SPREAD — octave doublings
+// ============================================================
+
+// Spread configuration: which roles get octave doublings
+// Tight: none, Med: root+12, Open: root+12 + 5th+12, Wide: root+24
+const uint8_t spreadDoublings[4][3] = {
+  {0, 0, 0},           // Tight: no doublings
+  {1, 0, 0},           // Med: root+12
+  {1, 1, 0},           // Open: root+12, 5th+12
+  {1, 0, 1}            // Wide: root+12, root+24
+};
+const uint8_t spreadOctaves[4][3] = {
+  {0, 0, 0},
+  {1, 0, 0},
+  {1, 1, 0},
+  {1, 2, 0}
+};
+
+// ============================================================
+// STAGE 12: REGISTER — global transposition
+// ============================================================
+
+// Register offsets (semitones)
+const int8_t registerOffsets[4] = {-12, -6, +6, +12};
+
+// ============================================================
+// STAGE 13: MIDI OUTPUT — voicing pass
+// ============================================================
+
+// Convert ChordStructure to sorted MIDI notes
+// Returns number of notes (up to maxNotes)
+uint8_t chordStructureToMIDINotes(
+  const ChordStructure &chord,
+  uint8_t *midiNotes,      // output array
+  uint8_t maxNotes,
+  uint8_t topVoice,        // 0=Root, 1=3rd, 2=5th, 3=7th
+  uint8_t bass,            // 0=Root, 1=3rd, 2=5th, 3=7th
+  uint8_t spacing,         // 0=Close, 1=Med, 2=Open, 3=Wide
+  uint8_t spread,          // 0=Tight, 1=Med, 2=Open, 3=Wide
+  uint8_t reg              // 0=Low, 1=LoMd, 2=HiMd, 3=High
+) {
+  uint8_t count = 0;
+
+  // Collect present tones as MIDI notes
+  for (uint8_t i = 0; i < ROLE_COUNT && count < maxNotes; i++) {
+    if (!chord.tones[i].present) continue;
+    uint8_t midi = chord.rootMIDI + chord.tones[i].pitchClass
+                   + (chord.tones[i].octaveOffset * 12);
+    midiNotes[count++] = midi;
+  }
+
+  if (count == 0) return 0;
+
+  // Sort ascending
+  for (uint8_t i = 0; i < count - 1; i++) {
+    for (uint8_t j = i + 1; j < count; j++) {
+      if (midiNotes[j] < midiNotes[i]) {
+        uint8_t tmp = midiNotes[i];
+        midiNotes[i] = midiNotes[j];
+        midiNotes[j] = tmp;
+      }
+    }
+  }
+
+  // Apply spacing: enforce minimum intervals between adjacent notes
+  if (spacing > 0 && count > 1) {
+    uint8_t minInterval = spacingIntervals[spacing];
+    for (uint8_t i = 1; i < count; i++) {
+      uint8_t minNote = midiNotes[i - 1] + minInterval;
+      if (midiNotes[i] < minNote) {
+        midiNotes[i] = minNote;
+      }
+    }
+  }
+
+  // Apply spread: octave doublings
+  if (spread > 0 && count < maxNotes) {
+    // Spread adds root an octave up (or two octaves for Wide)
+    uint8_t rootMIDI = midiNotes[0]; // root should be first after sort
+    if (spread == 1 || spread == 2) {
+      midiNotes[count++] = rootMIDI + 12;
+    }
+    if (spread == 3) {
+      midiNotes[count++] = rootMIDI + 24;
+    }
+    // Re-sort after spread
+    for (uint8_t i = 0; i < count - 1; i++) {
+      for (uint8_t j = i + 1; j < count; j++) {
+        if (midiNotes[j] < midiNotes[i]) {
+          uint8_t tmp = midiNotes[i];
+          midiNotes[i] = midiNotes[j];
+          midiNotes[j] = tmp;
+        }
+      }
+    }
+  }
+
+  // Apply register: global transposition
+  int8_t regOffset = registerOffsets[reg];
+  for (uint8_t i = 0; i < count; i++) {
+    midiNotes[i] = constrain(midiNotes[i] + regOffset, 36, 96);
+  }
+
+  // Remove duplicates
+  uint8_t unique[maxNotes];
+  uint8_t uniqueCount = 0;
+  for (uint8_t i = 0; i < count; i++) {
+    bool dup = false;
+    for (uint8_t j = 0; j < uniqueCount; j++) {
+      if (unique[j] == midiNotes[i]) { dup = true; break; }
+    }
+    if (!dup) unique[uniqueCount++] = midiNotes[i];
+  }
+
+  // Copy back
+  for (uint8_t i = 0; i < uniqueCount && i < maxNotes; i++) {
+    midiNotes[i] = unique[i];
+  }
+
+  return uniqueCount;
+}
 
 void stopChord() {
   for (uint8_t i = 0; i < chordNoteCount; i++) {
@@ -813,7 +1492,17 @@ void readKeyModeEncoders() {
     if (i == 3) {
       // Chord: clockwise=ON, counterclockwise=OFF
       if (delta > 0) keyChordOn = true;
-      else if (delta < 0) keyChordOn = false;
+      else if (delta < 0) {
+        keyChordOn = false;
+        // Stop any sustaining chord
+        if (chord.active) {
+          stopChord();
+          chord.noteRoot = -1;
+          chord.heldKeyIndex = -1;
+          chord.heldCount = 0;
+          updateKeyModeLEDs();
+        }
+      }
       continue;
     }
     keyEncAccum[i] += delta;
@@ -1387,7 +2076,7 @@ void handleControlButton(ButtonMap* button, bool pressed) {
 
     // In KEY MODE: control buttons do NOT send MIDI (except SEQ, already handled)
     // Handle M1 and F1-F4 for Discovery Mode
-    if (keyModeActive) {
+    if (keyModeActive && strcmp(button->name, "ENC") != 0) {
       if (strcmp(button->name, "M1") == 0) {
         // Toggle Discovery Mode
         chord.active = !chord.active;
@@ -1397,6 +2086,8 @@ void handleControlButton(ButtonMap* button, bool pressed) {
         } else {
           stopChord();
           chord.noteRoot = -1;
+          chord.heldKeyIndex = -1;
+          chord.heldCount = 0;
           Serial.println("  -> Exited Discovery Mode");
         }
         return;
@@ -1478,9 +2169,9 @@ void handleControlButton(ButtonMap* button, bool pressed) {
             } else {
               if (chord.active) {
                 stopChord();
-                chord.active = false;
                 chord.noteRoot = -1;
                 chord.heldKeyIndex = -1;
+                chord.heldCount = 0;
               }
               restoreKeyEncPositions();
               enableAllEncoders();
@@ -1519,18 +2210,26 @@ void handleKeyboardButton(ButtonMap* button, bool pressed) {
       int8_t midiNote = 48 + keyIndex + (keyOctave - 3) * 12;
       chord.noteRoot = midiNote;
       chord.heldKeyIndex = keyIndex;
+      chord.heldCount++;
       playChord(midiNote);
     } else {
-      stopChord();
-      chord.noteRoot = -1;
-      chord.heldKeyIndex = -1;
-      updateKeyModeLEDs();
+      chord.heldCount--;
+      if (!keyChordOn && chord.heldCount <= 0) {
+        // Latch OFF: stop chord when all notes released
+        stopChord();
+        chord.noteRoot = -1;
+        chord.heldKeyIndex = -1;
+        chord.heldCount = 0;
+        updateKeyModeLEDs();
+      } else if (chord.heldCount < 0) {
+        chord.heldCount = 0;
+      }
     }
     return;
   }
 
-  // In KEY mode, only send notes that are in the selected scale
-  if (keyModeActive && !isNoteInScale(keyIndex)) {
+  // Filter notes not in the selected scale (unless Chromatic is selected)
+  if (keyScale != 0 && !isNoteInScale(keyIndex)) {
     if (pressed) {
       // Flash red briefly to indicate disabled
       const uint8_t keyboardLEDs[] = { 25, 37, 26, 38, 27, 28, 39, 29, 40, 30, 41, 31 };

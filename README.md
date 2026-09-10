@@ -79,15 +79,34 @@ Tap KEY button to toggle. When active:
 ### Discovery Mode (M1 in KEY mode)
 Chord engine activated by M1 button. 4 pages of parameters controlled by encoders 4-7:
 
-**F1 — CHORD**: Quality (Maj/Min/Dim/Aug/Sus2/Sus4), Size (Tri/7th/9th/11th/13th), Extension (Off/b9/#9/#11/b13), Tension (Low/Med/High)
+**F1 — CHORD** (ENC4-7): Quality (Maj/Min/Dim/Aug/Sus2/Sus4), Size (Tri/7th/9th/11th/13th), Extension (Off/9/11/13), Density (Full/Reduced/Sparse)
 
-**F2 — COLOR**: Added (Off/2/4/6/13), Suspension (Off/Sus2/Sus4/2+4), Alteration (Off/b5/#5/b9/#9/#11), Spread (Tight/Med/Open/Wide)
+**F2 — COLOR** (ENC4-7): Added (Off/2/4/6/13), Suspension (Off/Sus2/Sus4/2+4), Alteration (Off/b5/#5/b9/#9/#11/b13), Spread (Tight/Med/Open/Wide)
 
-**F3 — VOICING**: Inversion (Root/1st/2nd/3rd), Spacing (Close/Med/Open/Wide), Register (Low/LoMd/HiMd/High), Bass (Root/3rd/5th/7th)
+**F3 — VOICING** (ENC4-7): Top Voice (Root/3rd/5th/7th), Spacing (Close/Med/Open/Wide), Register (Low/LoMd/HiMd/High), Bass (Root/3rd/5th/7th)
 
-**F4 — DISCOVERY**: Relation (Rt/3rd/5th/7th/Ext), Diatonic/Chromatic (Dia/Mix/Chr), Simple/Complex (Smp/Med/Cplx), Familiar/Unexp (Fam/Mix/Unx)
+**F4 — DISCOVERY** (ENC4-7): Relation (Rt/3rd/5th/7th/Ext), Diatonic/Chromatic (Dia/Mix/Chr), Simple/Complex (Smp/Med/Cplx), Familiar/Unexp (Fam/Mix/Unx)
 
 Press keyboard keys to play chords. Parameters modify chord voicing in real-time.
+
+#### Chord Engine Processing Pipeline
+```
+Quality → Size → Extension → Added Tone → Suspension → Alteration → Density → Top Voice / Bass → Spacing / Spread / Register → MIDI
+```
+
+#### ChordStructure Model
+Each chord tone carries:
+- `role` — semantic identity (Root, Third, Fifth, Seventh, Ninth, Eleventh, Thirteenth, Added)
+- `pitchClass` — 0-11, resolved after Quality + Scale
+- `octaveOffset` — 0/1/2 for diatonic extension carry
+- `present` — whether this tone is active
+- `altered` — whether Alteration modified the pitch
+
+#### Key Design Rules
+- Extension adds structural tones; Alteration modifies pitch of present tones (no overlap)
+- Density controls voicing sparsity (Full/Reduced/Sparse), not harmonic tension
+- Top Voice and Bass select by ChordRole, not array index (fallback to Root if unavailable)
+- Diatonic↔Chromatic filters Discovery candidates (0=diatonic only, 127=chromatic allowed)
 
 ### Encoder Bank Mode (ENC hold)
 Hold ENC button to enter. While held:
@@ -167,7 +186,7 @@ TeensikDiM/
 - [ ] **Sequencer Mode**: Implement actual step sequencer (pattern recording, editing, playback)
 - [ ] Remove diagnostic serial prints in `checkEncoderChanges()` (line 1629)
 - [ ] `disableKeyEncoders()` / `enableKeyEncoders()` — stub functions, currently empty
-- [ ] Discovery Mode: relation parameter (F4 enc0) only handles root offset for 3rd/5th/7th/9th, other harmonics not implemented
-- [ ] Discovery Mode: diatonic/chromatic, simple/complex, familiar/unexpected parameters (F4 enc1-3) not wired to chord engine
-- [ ] Chord engine: spread parameter only duplicates root note up 1-2 octaves, not full voice spreading
-- [ ] Chord engine: spacing parameter applies minimum interval but doesn't redistribute voices musically
+- [ ] Wire ChordStructure pipeline into playChord() (replace existing raw array approach)
+- [ ] Wire Discovery candidates into playChord() (Relation selects from candidate list)
+- [ ] Wire Diatonic↔Chromatic filtering into Discovery candidate eligibility
+- [ ] Add Simple/Complex and Familiar/Unexpected as Discovery search constraints (F4 enc2-3)
