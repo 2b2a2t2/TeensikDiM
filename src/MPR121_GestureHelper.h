@@ -20,6 +20,8 @@ public:
   void onTouchEvent(TouchEventCallback callback);
   void onGesture(GestureCallback callback);
   void setDebug(bool enable);
+  void setChannelBypassGestures(uint8_t sensorIndex, uint8_t channel, bool bypass);
+  void clearAllBypassGestures();
 
 private:
   struct TouchChannel {
@@ -28,6 +30,7 @@ private:
     bool longPressActive;
     bool doubleTapPossible;
     bool justHadDoubleTap;
+    bool bypassGestures;
     unsigned long pressTime;
     unsigned long releaseTime;
   };

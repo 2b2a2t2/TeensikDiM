@@ -29,6 +29,7 @@ void MPR121_GestureHelper::begin(uint16_t longPressTime, uint16_t doubleTapTime,
     channels[i].longPressActive = false;
     channels[i].doubleTapPossible = false;
     channels[i].justHadDoubleTap = false;
+    channels[i].bypassGestures = false;
     channels[i].pressTime = 0;
     channels[i].releaseTime = 0;
   }
@@ -161,9 +162,18 @@ void MPR121_GestureHelper::processChannel(uint8_t sensorIndex, uint8_t channel, 
   channels[idx].lastState = channels[idx].currentState;
   channels[idx].currentState = isTouched;
 
-  // Check for state changes with debouncing
+  // Bypass mode: immediate touch/release, no debounce, no double-tap, no long-press
+  if (channels[idx].bypassGestures) {
+    if (channels[idx].currentState != channels[idx].lastState) {
+      if (touchCallback) {
+        touchCallback(sensorIndex, channel, isTouched);
+      }
+    }
+    return;
+  }
+
+  // Normal mode: full gesture processing with debounce
   if (channels[idx].currentState != channels[idx].lastState) {
-    // Wait for debounce time
     if (currentTime - channels[idx].releaseTime > DEBOUNCE_TIME) {
 
       if (isTouched) {  // Touch detected (finger down)
@@ -171,7 +181,6 @@ void MPR121_GestureHelper::processChannel(uint8_t sensorIndex, uint8_t channel, 
 
         // Check for double tap
         if (channels[idx].doubleTapPossible && (currentTime - channels[idx].releaseTime) <= DOUBLE_TAP_TIME) {
-          // Double tap detected
           if (debugEnabled) {
             Serial.print(sensors[sensorIndex].name);
             Serial.print(" ch");
@@ -183,22 +192,16 @@ void MPR121_GestureHelper::processChannel(uint8_t sensorIndex, uint8_t channel, 
             gestureCallback(sensorIndex, channel, "double_tap", 0);
           }
 
-          // Reset double tap state - don't allow another immediately
           channels[idx].doubleTapPossible = false;
           channels[idx].justHadDoubleTap = true;
-
-          // Skip the press callback for the second tap
           return;
         } else {
-          // First tap or too slow for double tap
           channels[idx].doubleTapPossible = true;
           channels[idx].justHadDoubleTap = false;
         }
 
-        // Start long press timer
         channels[idx].longPressActive = true;
 
-        // Debug output for touch
         if (debugEnabled) {
           Serial.print(sensors[sensorIndex].name);
           Serial.print(" ch");
@@ -206,7 +209,6 @@ void MPR121_GestureHelper::processChannel(uint8_t sensorIndex, uint8_t channel, 
           Serial.println(" touched");
         }
 
-        // Call touch callback
         if (touchCallback) {
           touchCallback(sensorIndex, channel, true);
         }
@@ -214,26 +216,21 @@ void MPR121_GestureHelper::processChannel(uint8_t sensorIndex, uint8_t channel, 
       } else {  // Release detected (finger up)
         channels[idx].releaseTime = currentTime;
 
-        // Check if it was a short press (not long press)
         if (channels[idx].longPressActive) {
           unsigned long pressDuration = currentTime - channels[idx].pressTime;
 
           if (pressDuration < LONG_PRESS_TIME) {
-            // It was a short press
-            // Only enable double tap if we didn't just have one
             if (!channels[idx].justHadDoubleTap) {
               channels[idx].doubleTapPossible = true;
             }
           } else {
-            // Long press was already handled in the continuous check
             channels[idx].doubleTapPossible = false;
           }
 
           channels[idx].longPressActive = false;
-          channels[idx].justHadDoubleTap = false;  // Reset flag
+          channels[idx].justHadDoubleTap = false;
         }
 
-        // Debug output for release
         if (debugEnabled) {
           Serial.print(sensors[sensorIndex].name);
           Serial.print(" ch");
@@ -241,7 +238,6 @@ void MPR121_GestureHelper::processChannel(uint8_t sensorIndex, uint8_t channel, 
           Serial.println(" released");
         }
 
-        // Call touch callback
         if (touchCallback) {
           touchCallback(sensorIndex, channel, false);
         }
@@ -254,7 +250,6 @@ void MPR121_GestureHelper::processChannel(uint8_t sensorIndex, uint8_t channel, 
     unsigned long pressDuration = currentTime - channels[idx].pressTime;
 
     if (pressDuration >= LONG_PRESS_TIME) {
-      // Long press detected
       if (debugEnabled) {
         Serial.print(sensors[sensorIndex].name);
         Serial.print(" ch");
@@ -268,9 +263,8 @@ void MPR121_GestureHelper::processChannel(uint8_t sensorIndex, uint8_t channel, 
         gestureCallback(sensorIndex, channel, "long_press", pressDuration);
       }
 
-      // Prevent repeated long press triggers
       channels[idx].longPressActive = false;
-      channels[idx].doubleTapPossible = false;  // Can't double tap after long press
+      channels[idx].doubleTapPossible = false;
     }
   }
 
@@ -297,4 +291,24 @@ void MPR121_GestureHelper::onGesture(GestureCallback callback) {
 
 void MPR121_GestureHelper::setDebug(bool enable) {
   debugEnabled = enable;
+}
+
+void MPR121_GestureHelper::setChannelBypassGestures(uint8_t sensorIndex, uint8_t channel, bool bypass) {
+  int idx = getChannelIndex(sensorIndex, channel);
+  channels[idx].bypassGestures = bypass;
+  // Reset gesture state when enabling bypass
+  if (bypass) {
+    channels[idx].longPressActive = false;
+    channels[idx].doubleTapPossible = false;
+    channels[idx].justHadDoubleTap = false;
+  }
+}
+
+void MPR121_GestureHelper::clearAllBypassGestures() {
+  for (int i = 0; i < MAX_SENSORS * CHANNELS_PER_SENSOR; i++) {
+    channels[i].bypassGestures = false;
+    channels[i].longPressActive = false;
+    channels[i].doubleTapPossible = false;
+    channels[i].justHadDoubleTap = false;
+  }
 }
